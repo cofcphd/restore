@@ -3,6 +3,7 @@
 import os
 import uuid
 from contextlib import contextmanager
+from urllib.parse import urlparse
 
 from databricks import sql
 from databricks.sdk.core import Config
@@ -41,7 +42,14 @@ def _warehouse_http_path() -> str:
     ):
         value = os.environ.get(key)
         if value:
-            return value
+            # Resource bindings can expose either full http_path or warehouse id.
+            if value.startswith("/sql/1.0/warehouses/"):
+                return value
+            if "/sql/1.0/warehouses/" in value:
+                parsed = urlparse(value)
+                if parsed.path.startswith("/sql/1.0/warehouses/"):
+                    return parsed.path
+            return f"/sql/1.0/warehouses/{value}"
 
     warehouse_id = os.environ.get("DATABRICKS_WAREHOUSE_ID")
     if warehouse_id:
@@ -53,14 +61,26 @@ def _warehouse_http_path() -> str:
     )
 
 
+def _server_hostname() -> str:
+    cfg = Config()
+    host = (cfg.host or "").strip()
+    if not host:
+        raise ValueError("Mangler DATABRICKS_HOST i runtime-miljøet.")
+    if host.startswith(("http://", "https://")):
+        parsed = urlparse(host)
+        if parsed.hostname:
+            return parsed.hostname
+        raise ValueError(f"Ugyldig DATABRICKS_HOST: {host}")
+    return host.split("/")[0]
+
+
 @contextmanager
 def _connection(headers):
     token = get_user_token(headers)
     if not token:
         raise ValueError("Mangler bruger-token (x-forwarded-access-token).")
-    cfg = Config()
     conn = sql.connect(
-        server_hostname=cfg.host,
+        server_hostname=_server_hostname(),
         http_path=_warehouse_http_path(),
         access_token=token,
     )
