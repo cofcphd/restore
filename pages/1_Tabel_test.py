@@ -4,8 +4,6 @@ from auth import get_user_token
 from table_test_db import (
     load_entries,
     save_entry,
-    test_databricks_connection,
-    test_databricks_connection_app_auth,
 )
 
 st.title("Tabel-test")
@@ -24,7 +22,7 @@ field_3 = st.text_input("Felt 3")
 field_4 = st.text_input("Felt 4")
 field_5 = st.text_input("Felt 5")
 
-col_save, col_load, col_test = st.columns(3)
+col_save, col_load = st.columns(2)
 
 if col_save.button("Gem", type="primary", use_container_width=True):
     try:
@@ -42,48 +40,6 @@ if col_load.button("Indlæs", use_container_width=True):
     except Exception as err:
         st.error("Kunne ikke indlæse fra Databricks.")
         st.exception(err)
-
-if col_test.button("Test Databricks forbindelse", use_container_width=True):
-    result = test_databricks_connection(headers)
-    st.session_state["table_test_connection_result"] = result
-    user_label = result.get("current_user_user_name") or result.get("current_user_display_name") or "Ukendt"
-    st.info(f"Aktuel Databricks-bruger: {user_label}")
-    if result.get("current_user_rest_ok"):
-        st.success("Identity API OK")
-    else:
-        st.error("Identity API fejlede")
-    if (
-        result.get("token_present")
-        and result.get("server_hostname_found")
-        and result.get("http_path_format_ok")
-    ):
-        st.success("Token/hostname/warehouse path OK")
-    else:
-        st.warning("Token/hostname/warehouse path fejlede")
-    if result.get("warehouse_rest_ok"):
-        st.success("Warehouse REST OK")
-    else:
-        st.error("Warehouse REST fejlede")
-    if result.get("select_1_ok"):
-        st.success("SQL SELECT 1 OK")
-    else:
-        st.error("SQL SELECT 1 fejlede")
-    st.json(result)
-    if not result.get("select_1_ok"):
-        error_type = result.get("error_type") or "UkendtFejl"
-        error_message = result.get("error_message") or "Ingen fejlbesked."
-        st.error(f"Forbindelsestest fejlede: {error_type}: {error_message}")
-
-if col_test.button("Test Databricks forbindelse som app", use_container_width=True):
-    result_app = test_databricks_connection_app_auth()
-    st.session_state["table_test_connection_app_result"] = result_app
-    st.json(result_app)
-    if result_app.get("select_1_ok"):
-        st.success("App-forbindelse OK: SELECT 1 lykkedes.")
-    else:
-        error_type = result_app.get("error_type") or "UkendtFejl"
-        error_message = result_app.get("error_message") or "Ingen fejlbesked."
-        st.error(f"App-forbindelsestest fejlede: {error_type}: {error_message}")
 
 st.markdown("### Gemte rækker")
 rows = st.session_state.get("table_test_rows")
