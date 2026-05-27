@@ -7,5 +7,5 @@ command:
   - --server.address
   - 0.0.0.0
 env:
-  - name: DATABRICKS_WAREHOUSE_HTTP_PATH
-    value: /sql/1.0/warehouses/faaeb85234cac381
+  - name: DATABRICKS_WAREHOUSE_ID
+    valueFrom: sql-warehouse
