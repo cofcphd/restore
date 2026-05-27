@@ -41,10 +41,24 @@ if col_load.button("Indlæs", use_container_width=True):
 if col_test.button("Test Databricks forbindelse", use_container_width=True):
     result = test_databricks_connection(headers)
     st.session_state["table_test_connection_result"] = result
-    st.json(result)
-    if result.get("select_1_ok"):
-        st.success("Forbindelse OK: SELECT 1 lykkedes.")
+    if (
+        result.get("token_present")
+        and result.get("server_hostname_found")
+        and result.get("http_path_format_ok")
+    ):
+        st.success("Token/hostname/warehouse path OK")
     else:
+        st.warning("Token/hostname/warehouse path fejlede")
+    if result.get("warehouse_rest_ok"):
+        st.success("REST warehouse access OK")
+    else:
+        st.error("REST warehouse access fejlede")
+    if result.get("select_1_ok"):
+        st.success("SQL SELECT 1 OK")
+    else:
+        st.error("SQL SELECT 1 fejlede")
+    st.json(result)
+    if not result.get("select_1_ok"):
         error_type = result.get("error_type") or "UkendtFejl"
         error_message = result.get("error_message") or "Ingen fejlbesked."
         st.error(f"Forbindelsestest fejlede: {error_type}: {error_message}")

@@ -1,10 +1,12 @@
 """Isoleret lag til læs/skriv-test mod app_test.simple_form_entries."""
 
 import os
+import platform
 import re
 import uuid
 from contextlib import contextmanager
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from databricks import sql
 from databricks.sdk.core import Config
@@ -56,6 +58,16 @@ def _normalize_http_path(value: str) -> str:
     return f"/sql/1.0/warehouses/{value}"
 
 
+def _normalize_access_token(raw_token: str | None) -> tuple[str | None, bool]:
+    token = (raw_token or "").strip()
+    if not token:
+        return None, False
+    bearer_prefix = "bearer "
+    if token.lower().startswith(bearer_prefix):
+        return token[len(bearer_prefix) :].strip(), True
+    return token, False
+
+
 def _warehouse_http_path() -> str:
     for key in (
         "DATABRICKS_WAREHOUSE_HTTP_PATH",
@@ -90,7 +102,7 @@ def _server_hostname() -> str:
 
 @contextmanager
 def _connection(headers):
-    token = get_user_token(headers)
+    token, _ = _normalize_access_token(get_user_token(headers))
     if not token:
         raise ValueError(
             "Mangler x-forwarded-access-token. Tjek at User authorization er slået til, "
@@ -139,6 +151,8 @@ def test_databricks_connection(headers) -> dict:
     status = {
         "headers_present": bool(headers),
         "has_x_forwarded_access_token": bool(get_user_token(headers or {})),
+        "databricks_sql_connector_version": getattr(sql, "__version__", "unknown"),
+        "python_version": platform.python_version(),
         "server_hostname_found": False,
         "server_hostname": None,
         "warehouse_env": {
@@ -150,9 +164,17 @@ def test_databricks_connection(headers) -> dict:
         "resolved_http_path": None,
         "http_path_format_ok": False,
         "warehouse_id_preview": None,
+        "token_present": False,
+        "token_had_bearer_prefix": False,
+        "warehouse_rest_status_code": None,
+        "warehouse_rest_ok": False,
+        "warehouse_rest_error_text": None,
         "select_1_ok": False,
         "error_type": None,
         "error_message": None,
+        "error_repr": None,
+        "error_args": None,
+        "error_dict": None,
     }
 
     for key in status["warehouse_env"]:
@@ -169,12 +191,32 @@ def test_databricks_connection(headers) -> dict:
         warehouse_id = http_path.rsplit("/", 1)[-1] if "/" in http_path else http_path
         status["warehouse_id_preview"] = _mask_value(warehouse_id)
 
-        token = get_user_token(headers or {})
+        raw_token = get_user_token(headers or {})
+        token, had_bearer_prefix = _normalize_access_token(raw_token)
+        status["token_present"] = bool(token)
+        status["token_had_bearer_prefix"] = had_bearer_prefix
         if not token:
             raise ValueError(
                 "Mangler x-forwarded-access-token. Tjek at User authorization er slået til, "
                 "at appen har sql scope, og at appen er åbnet via Databricks Apps UI."
             )
+
+        rest_url = f"https://{server_hostname}/api/2.0/sql/warehouses/{warehouse_id}"
+        try:
+            request = Request(
+                rest_url,
+                headers={"Authorization": f"Bearer {token}"},
+                method="GET",
+            )
+            with urlopen(request, timeout=20) as response:
+                status_code = getattr(response, "status", None)
+                status["warehouse_rest_status_code"] = status_code
+                status["warehouse_rest_ok"] = bool(status_code and 200 <= status_code < 300)
+        except Exception as rest_err:  # noqa: BLE001 - debug helper should catch all failures
+            status_code = getattr(rest_err, "code", None)
+            status["warehouse_rest_status_code"] = status_code
+            status["warehouse_rest_ok"] = False
+            status["warehouse_rest_error_text"] = str(rest_err)[:500]
 
         conn = sql.connect(
             server_hostname=server_hostname,
@@ -191,5 +233,17 @@ def test_databricks_connection(headers) -> dict:
     except Exception as err:  # noqa: BLE001 - debug helper should catch all failures
         status["error_type"] = type(err).__name__
         status["error_message"] = str(err)
+        status["error_repr"] = repr(err)
+        try:
+            status["error_args"] = [str(item) for item in getattr(err, "args", ())]
+        except Exception:  # noqa: BLE001
+            status["error_args"] = None
+        try:
+            error_dict = getattr(err, "__dict__", None)
+            status["error_dict"] = (
+                {k: str(v) for k, v in error_dict.items()} if isinstance(error_dict, dict) else None
+            )
+        except Exception:  # noqa: BLE001
+            status["error_dict"] = None
 
     return status
