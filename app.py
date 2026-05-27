@@ -10,6 +10,7 @@ Påkrævede miljøvariabler:
 
 from __future__ import annotations
 
+import os
 from datetime import date
 
 import streamlit as st
@@ -203,10 +204,20 @@ def main() -> None:
 
     if not st.session_state.table_ready:
         try:
+            table_name = db.get_restore_requests_table()
             db.ensure_restore_requests_table()
             st.session_state.table_ready = True
+            if not os.environ.get("RESTORE_REQUESTS_TABLE", "").strip():
+                st.sidebar.warning(
+                    f"RESTORE_REQUESTS_TABLE er ikke sat — bruger default: `{table_name}`"
+                )
         except Exception as err:
             st.error("Kunne ikke initialisere restore_requests-tabellen.")
+            st.markdown(
+                "Sæt miljøvariablen `RESTORE_REQUESTS_TABLE` til en fuld UC-sti, "
+                "fx `main.restore.restore_requests`, i **app.yaml** under `env:` "
+                "eller under appens Environment variables i Databricks."
+            )
             st.exception(err)
             st.stop()
 

@@ -12,9 +12,14 @@ from databricks import sql
 from databricks.sdk.core import Config
 from databricks.sdk.credentials_provider import oauth_service_principal
 
-TABLE_PATTERN = re.compile(r"^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$")
+IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z0-9_]+$")
+DEFAULT_RESTORE_REQUESTS_TABLE = "main.restore.restore_requests"
 
 _table_verified = False
+
+
+def _normalize_table_ref(raw: str) -> str:
+    return raw.strip().strip("'\"").strip("`")
 
 
 def _server_hostname() -> str:
@@ -32,12 +37,27 @@ def _http_path() -> str:
 
 
 def get_restore_requests_table() -> str:
-    table = os.environ.get("RESTORE_REQUESTS_TABLE", "").strip()
-    if not table or not TABLE_PATTERN.match(table):
+    raw = os.environ.get("RESTORE_REQUESTS_TABLE", "").strip()
+    if not raw:
+        raw = DEFAULT_RESTORE_REQUESTS_TABLE
+
+    table = _normalize_table_ref(raw)
+    parts = table.split(".")
+    if len(parts) != 3:
         raise ValueError(
-            "RESTORE_REQUESTS_TABLE skal være en fuld UC-sti (catalog.schema.table), "
-            "fx main.restore.restore_requests."
+            f"RESTORE_REQUESTS_TABLE skal være catalog.schema.table (3 dele). "
+            f"Modtaget: {raw!r} ({len(parts)} dele). "
+            f"Eksempel: {DEFAULT_RESTORE_REQUESTS_TABLE}. "
+            f"Sæt variablen i app.yaml under env: eller i Databricks App-indstillinger."
         )
+
+    for part in parts:
+        if not IDENTIFIER_PATTERN.match(part):
+            raise ValueError(
+                f"Ugyldigt tabelnavn i RESTORE_REQUESTS_TABLE: {table!r}. "
+                f"Hvert segment (catalog, schema, table) må kun indeholde bogstaver, tal og underscore."
+            )
+
     return table
 
 
