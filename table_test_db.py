@@ -2,6 +2,7 @@
 
 import os
 import platform
+import json
 import re
 import uuid
 from contextlib import contextmanager
@@ -169,6 +170,11 @@ def test_databricks_connection(headers) -> dict:
         "warehouse_rest_status_code": None,
         "warehouse_rest_ok": False,
         "warehouse_rest_error_text": None,
+        "current_user_rest_status_code": None,
+        "current_user_rest_ok": False,
+        "current_user_user_name": None,
+        "current_user_display_name": None,
+        "current_user_error_text": None,
         "select_1_ok": False,
         "error_type": None,
         "error_message": None,
@@ -200,6 +206,25 @@ def test_databricks_connection(headers) -> dict:
                 "Mangler x-forwarded-access-token. Tjek at User authorization er slået til, "
                 "at appen har sql scope, og at appen er åbnet via Databricks Apps UI."
             )
+
+        current_user_url = f"https://{server_hostname}/api/2.0/preview/scim/v2/Me"
+        try:
+            request = Request(
+                current_user_url,
+                headers={"Authorization": f"Bearer {token}"},
+                method="GET",
+            )
+            with urlopen(request, timeout=20) as response:
+                status_code = getattr(response, "status", None)
+                status["current_user_rest_status_code"] = status_code
+                status["current_user_rest_ok"] = bool(status_code and 200 <= status_code < 300)
+                payload = json.loads(response.read().decode("utf-8"))
+                status["current_user_user_name"] = payload.get("userName") or payload.get("email")
+                status["current_user_display_name"] = payload.get("displayName")
+        except Exception as current_user_err:  # noqa: BLE001 - debug helper should catch all failures
+            status["current_user_rest_status_code"] = getattr(current_user_err, "code", None)
+            status["current_user_rest_ok"] = False
+            status["current_user_error_text"] = str(current_user_err)[:500]
 
         rest_url = f"https://{server_hostname}/api/2.0/sql/warehouses/{warehouse_id}"
         try:

@@ -41,6 +41,12 @@ if col_load.button("Indlæs", use_container_width=True):
 if col_test.button("Test Databricks forbindelse", use_container_width=True):
     result = test_databricks_connection(headers)
     st.session_state["table_test_connection_result"] = result
+    user_label = result.get("current_user_user_name") or result.get("current_user_display_name") or "Ukendt"
+    st.info(f"Aktuel Databricks-bruger: {user_label}")
+    if result.get("current_user_rest_ok"):
+        st.success("Identity API OK")
+    else:
+        st.error("Identity API fejlede")
     if (
         result.get("token_present")
         and result.get("server_hostname_found")
@@ -50,9 +56,9 @@ if col_test.button("Test Databricks forbindelse", use_container_width=True):
     else:
         st.warning("Token/hostname/warehouse path fejlede")
     if result.get("warehouse_rest_ok"):
-        st.success("REST warehouse access OK")
+        st.success("Warehouse REST OK")
     else:
-        st.error("REST warehouse access fejlede")
+        st.error("Warehouse REST fejlede")
     if result.get("select_1_ok"):
         st.success("SQL SELECT 1 OK")
     else:
