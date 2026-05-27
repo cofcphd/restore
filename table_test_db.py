@@ -15,9 +15,9 @@ from databricks.sdk.core import Config
 
 from auth import get_user_token
 
-CREATE_SCHEMA_SQL = "CREATE SCHEMA IF NOT EXISTS app_test"
+CREATE_SCHEMA_SQL = "CREATE SCHEMA IF NOT EXISTS main.app_test"
 CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS app_test.simple_form_entries (
+CREATE TABLE IF NOT EXISTS main.app_test.simple_form_entries (
   id STRING,
   field_1 STRING,
   field_2 STRING,
@@ -28,13 +28,13 @@ CREATE TABLE IF NOT EXISTS app_test.simple_form_entries (
 )
 """
 INSERT_SQL = """
-INSERT INTO app_test.simple_form_entries
+INSERT INTO main.app_test.simple_form_entries
   (id, field_1, field_2, field_3, field_4, field_5, created_at)
 VALUES (?, ?, ?, ?, ?, ?, current_timestamp())
 """
 SELECT_SQL = """
 SELECT id, field_1, field_2, field_3, field_4, field_5, created_at
-FROM app_test.simple_form_entries
+FROM main.app_test.simple_form_entries
 ORDER BY created_at DESC
 """
 
@@ -175,32 +175,80 @@ def _connection(headers):
         conn.close()
 
 
+def _app_auth_config() -> tuple[str, str, str]:
+    sdk_host, server_hostname = _normalised_hosts()
+    client_id = (os.getenv("DATABRICKS_CLIENT_ID") or "").strip()
+    client_secret = (os.getenv("DATABRICKS_CLIENT_SECRET") or "").strip()
+    warehouse_id = (os.getenv("DATABRICKS_WAREHOUSE_ID") or "").strip()
+    missing = []
+    if not client_id:
+        missing.append("DATABRICKS_CLIENT_ID")
+    if not client_secret:
+        missing.append("DATABRICKS_CLIENT_SECRET")
+    if not warehouse_id:
+        missing.append("DATABRICKS_WAREHOUSE_ID")
+    if missing:
+        raise ValueError(f"Mangler app-auth env-vars: {', '.join(missing)}")
+    return sdk_host, server_hostname, warehouse_id
+
+
+@contextmanager
+def _connection_app_auth():
+    sdk_host, server_hostname, warehouse_id = _app_auth_config()
+    http_path = f"/sql/1.0/warehouses/{warehouse_id}"
+    cfg = Config(
+        host=sdk_host,
+        client_id=os.getenv("DATABRICKS_CLIENT_ID"),
+        client_secret=os.getenv("DATABRICKS_CLIENT_SECRET"),
+    )
+    conn = sql.connect(
+        server_hostname=server_hostname,
+        http_path=http_path,
+        credentials_provider=lambda: cfg.authenticate,
+    )
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 def ensure_table(headers) -> None:
-    with _connection(headers) as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(CREATE_SCHEMA_SQL)
-            cursor.execute(CREATE_TABLE_SQL)
+    try:
+        with _connection_app_auth() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(CREATE_SCHEMA_SQL)
+                cursor.execute(CREATE_TABLE_SQL)
+    except ValueError:
+        raise
+    except Exception as err:
+        raise RuntimeError(f"CREATE TABLE fejlede: {err}") from err
 
 
 def save_entry(headers, field_1: str, field_2: str, field_3: str, field_4: str, field_5: str) -> str:
     ensure_table(headers)
     row_id = str(uuid.uuid4())
-    with _connection(headers) as conn:
+    with _connection_app_auth() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(
-                INSERT_SQL,
-                (row_id, field_1, field_2, field_3, field_4, field_5),
-            )
+            try:
+                cursor.execute(
+                    INSERT_SQL,
+                    (row_id, field_1, field_2, field_3, field_4, field_5),
+                )
+            except Exception as err:
+                raise RuntimeError(f"INSERT fejlede: {err}") from err
     return row_id
 
 
 def load_entries(headers) -> list[dict]:
     ensure_table(headers)
-    with _connection(headers) as conn:
+    with _connection_app_auth() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(SELECT_SQL)
-            columns = [col[0] for col in cursor.description]
-            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+            try:
+                cursor.execute(SELECT_SQL)
+                columns = [col[0] for col in cursor.description]
+                return [dict(zip(columns, row)) for row in cursor.fetchall()]
+            except Exception as err:
+                raise RuntimeError(f"SELECT fejlede: {err}") from err
 
 
 def test_databricks_connection(headers) -> dict:
