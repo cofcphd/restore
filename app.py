@@ -1,231 +1,92 @@
-"""
-Restore bestillingsapp (Databricks App / Streamlit).
-
-Påkrævede miljøvariabler:
-- DATABRICKS_WAREHOUSE_ID: SQL warehouse ID
-- RESTORE_REQUESTS_TABLE: UC-tabel, fx main.restore.restore_requests
-- RESTORE_ADMIN_GROUP: admin-gruppe (default: admins)
-- DATABRICKS_HOST: workspace host (sættes typisk af Databricks Apps)
-"""
-
-from __future__ import annotations
-
 import os
-from datetime import date
 
+from databricks.sdk import WorkspaceClient
 import streamlit as st
 
-import auth
-import db
-
-ENV_OPTIONS = ("dev", "test", "prod")
-RESTORE_SCHEMA_OPTIONS = ("yes", "no")
+RESTORE_ADMIN_GROUP = "restore-admin"
 
 
-def _init_session() -> None:
-    if "page" not in st.session_state:
-        st.session_state.page = "order"
-    if "table_ready" not in st.session_state:
-        st.session_state.table_ready = False
+def _header(headers, name: str) -> str | None:
+    """Case-insensitive header lookup."""
+    value = headers.get(name)
+    if value:
+        return value
+    lower = name.lower()
+    for key, val in headers.items():
+        if key.lower() == lower:
+            return val
+    return None
 
 
-def _render_sidebar(user: auth.CurrentUser) -> None:
-    st.sidebar.markdown(f"**{user.display_name}**")
-    st.sidebar.caption(user.user_name)
-
-    if st.sidebar.button("Bestil restore", use_container_width=True):
-        st.session_state.page = "order"
-
-    if auth.is_restore_admin(user):
-        if st.sidebar.button("Til godkendelse", use_container_width=True):
-            st.session_state.page = "approval"
+def get_user_token() -> str | None:
+    return _header(st.context.headers, "x-forwarded-access-token")
 
 
-def _validate_order_form(env: str, restore_to_new_schema: str) -> list[str]:
-    errors: list[str] = []
-    if env not in ENV_OPTIONS:
-        errors.append("Environment skal være dev, test eller prod.")
-    if restore_to_new_schema not in RESTORE_SCHEMA_OPTIONS:
-        errors.append("Restore to new schema skal være yes eller no.")
-    return errors
-
-
-def _render_order_page(user: auth.CurrentUser) -> None:
-    st.title("Bestil restore")
-
-    with st.form("restore_order_form"):
-        catalog_identifier = st.text_input(
-            "Catalog identifier",
-            help="Blank er tilladt",
+def get_user_client() -> WorkspaceClient:
+    token = get_user_token()
+    if not token:
+        raise ValueError(
+            "Mangler x-forwarded-access-token. Aktivér on-behalf-of user authorization "
+            "på appen og genstart den fuldt (stop + start)."
         )
-        env = st.selectbox(
-            "Environment",
-            options=ENV_OPTIONS,
-            help="Bruges til at udlede catalog + volume",
-        )
-        source_schema = st.text_input(
-            "Source schema",
-            help="Blank betyder alle schemas",
-        )
-        restore_to_new_schema = st.radio(
-            "Restore to new schema",
-            options=RESTORE_SCHEMA_OPTIONS,
-            index=1,
-            horizontal=True,
-        )
-        use_backup_date = st.checkbox("Angiv backup date")
-        backup_date_value = None
-        if use_backup_date:
-            backup_date_value = st.date_input(
-                "Backup date",
-                help="Blank betyder latest backup",
-            )
-        specific_tables = st.text_area(
-            "Specific tables",
-            help="Blank betyder alle tabeller. Ved flere tabeller: én pr. linje eller kommasepareret",
-        )
-
-        submitted = st.form_submit_button("Opret restore-bestilling")
-
-    if not submitted:
-        return
-
-    errors = _validate_order_form(env, restore_to_new_schema)
-    if errors:
-        for msg in errors:
-            st.error(msg)
-        return
-
-    backup_date_str = backup_date_value.isoformat() if backup_date_value else None
-    tables_normalized = db.normalize_specific_tables(specific_tables)
-
-    try:
-        request_id = db.create_restore_request(
-            created_by=user.user_name,
-            created_by_display_name=user.display_name,
-            catalog_identifier=catalog_identifier.strip() or None,
-            env=env,
-            source_schema=source_schema.strip() or None,
-            restore_to_new_schema=restore_to_new_schema,
-            backup_date=backup_date_str,
-            specific_tables=tables_normalized,
-        )
-        st.success(f"Restore-bestilling oprettet. Request ID: `{request_id}`")
-    except Exception as err:
-        st.error("Kunne ikke oprette restore-bestilling.")
-        st.exception(err)
+    return WorkspaceClient(
+        host=os.environ.get("DATABRICKS_HOST"),
+        token=token,
+        auth_type="pat",
+    )
 
 
-def _render_approval_page(user: auth.CurrentUser) -> None:
-    if not auth.is_restore_admin(user):
-        st.error("Du har ikke adgang til godkendelse.")
-        st.session_state.page = "order"
-        st.rerun()
-
-    st.title("Til godkendelse")
-
-    try:
-        pending = db.get_pending_restore_requests()
-    except Exception as err:
-        st.error("Kunne ikke hente pending restore-bestillinger.")
-        st.exception(err)
-        return
-
-    if not pending:
-        st.info("Ingen restore-bestillinger med status PENDING.")
-        return
-
-    for row in pending:
-        request_id = row["request_id"]
-        with st.expander(f"{request_id} — {row.get('env', '')} — {row.get('created_by', '')}"):
-            st.write(f"**Request ID:** `{request_id}`")
-            st.write(f"**Oprettet:** {row.get('created_at')}")
-            st.write(f"**Oprettet af:** {row.get('created_by')}")
-            st.write(f"**Environment:** {row.get('env')}")
-            st.write(f"**Catalog identifier:** {row.get('catalog_identifier') or '(blank)'}")
-            st.write(f"**Source schema:** {row.get('source_schema') or '(blank)'}")
-            st.write(f"**Restore to new schema:** {row.get('restore_to_new_schema')}")
-            st.write(f"**Backup date:** {row.get('backup_date') or '(latest)'}")
-            st.write(f"**Specific tables:** {row.get('specific_tables') or '(alle)'}")
-            st.write(f"**Status:** {row.get('status')}")
-
-            col_approve, col_reject = st.columns(2)
-            with col_approve:
-                if st.button("Godkend", key=f"approve_{request_id}", use_container_width=True):
-                    if not auth.is_restore_admin(user):
-                        st.error("Kun admins kan godkende.")
-                        return
-                    try:
-                        if db.approve_restore_request(request_id, user.user_name):
-                            st.success(f"Request `{request_id}` er godkendt.")
-                            st.rerun()
-                        else:
-                            st.warning("Requesten blev ikke opdateret (måske allerede behandlet).")
-                            st.rerun()
-                    except Exception as err:
-                        st.error("Godkendelse fejlede.")
-                        st.exception(err)
-            with col_reject:
-                if st.button("Afvis", key=f"reject_{request_id}", use_container_width=True):
-                    if not auth.is_restore_admin(user):
-                        st.error("Kun admins kan afvise.")
-                        return
-                    try:
-                        if db.reject_restore_request(request_id, user.user_name):
-                            st.success(f"Request `{request_id}` er afvist.")
-                            st.rerun()
-                        else:
-                            st.warning("Requesten blev ikke opdateret (måske allerede behandlet).")
-                            st.rerun()
-                    except Exception as err:
-                        st.error("Afvisning fejlede.")
-                        st.exception(err)
+def group_names(me) -> list[str]:
+    return sorted(
+        {
+            g.display
+            for g in (me.groups or [])
+            if getattr(g, "display", None)
+        }
+    )
 
 
-def main() -> None:
-    st.set_page_config(page_title="Restore", page_icon="🔄")
-    _init_session()
+def is_restore_admin(groups: list[str]) -> bool:
+    normalized = {g.lower() for g in groups}
+    return RESTORE_ADMIN_GROUP.lower() in normalized
 
-    if not auth.get_user_token():
-        st.error(
-            "Ingen bruger-token fundet. Aktivér on-behalf-of user authorization på appen "
-            "og genstart den fuldt (stop + start)."
-        )
-        st.stop()
 
-    try:
-        user = auth.get_current_user()
-    except Exception as err:
-        st.error("Kunne ikke hente brugerinformation.")
-        st.exception(err)
-        st.stop()
+st.set_page_config(page_title="Min Databricks profil", page_icon="👤")
+st.title("Min Databricks profil")
 
-    _render_sidebar(user)
+st.caption("Viser display name og grupper for den bruger, der er logget ind.")
 
-    if not st.session_state.table_ready:
-        try:
-            table_name = db.get_restore_requests_table()
-            db.ensure_restore_requests_table()
-            st.session_state.table_ready = True
-            if not os.environ.get("RESTORE_REQUESTS_TABLE", "").strip():
-                st.sidebar.warning(
-                    f"RESTORE_REQUESTS_TABLE er ikke sat — bruger default: `{table_name}`"
-                )
-        except Exception as err:
-            st.error("Kunne ikke initialisere restore_requests-tabellen.")
-            st.markdown(
-                "Sæt miljøvariablen `RESTORE_REQUESTS_TABLE` til en fuld UC-sti, "
-                "fx `main.restore.restore_requests`, i **app.yaml** under `env:` "
-                "eller under appens Environment variables i Databricks."
-            )
-            st.exception(err)
-            st.stop()
+user_token = get_user_token()
+if not user_token:
+    st.warning(
+        "Ingen bruger-token i request. Uden `x-forwarded-access-token` vil "
+        "`WorkspaceClient()` kun give appens service principal."
+    )
+    st.stop()
 
-    if st.session_state.page == "approval":
-        _render_approval_page(user)
+try:
+    w = get_user_client()
+    me = w.current_user.me()
+
+    display_name = me.display_name or me.user_name or "Ukendt bruger"
+    groups = group_names(me)
+
+    st.subheader(display_name)
+    st.write(f"Brugernavn: `{me.user_name}`")
+
+    st.markdown("### Grupper")
+    if groups:
+        for group_name in groups:
+            st.write(f"- {group_name}")
     else:
-        _render_order_page(user)
+        st.info("Ingen grupper fundet for brugeren.")
 
+    st.markdown("### Restore admin")
+    if is_restore_admin(groups):
+        st.success(f"Du er medlem af `{RESTORE_ADMIN_GROUP}`.")
+    else:
+        st.error(f"Du er ikke medlem af `{RESTORE_ADMIN_GROUP}`.")
 
-if __name__ == "__main__":
-    main()
+except Exception as err:
+    st.error("Kunne ikke hente brugerinformation fra Databricks.")
+    st.exception(err)
