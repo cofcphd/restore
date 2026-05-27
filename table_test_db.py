@@ -42,9 +42,14 @@ def _warehouse_http_path() -> str:
         value = os.environ.get(key)
         if value:
             return value
+
+    warehouse_id = os.environ.get("DATABRICKS_WAREHOUSE_ID")
+    if warehouse_id:
+        return f"/sql/1.0/warehouses/{warehouse_id}"
+
     raise ValueError(
-        "Mangler SQL warehouse http path. Tilføj en SQL warehouse-ressource til appen "
-        "eller sæt miljøvariablen DATABRICKS_WAREHOUSE_HTTP_PATH."
+        "Mangler SQL warehouse http path. Sæt DATABRICKS_WAREHOUSE_HTTP_PATH i app.yaml "
+        "eller bind en SQL warehouse-ressource (DATABRICKS_WAREHOUSE_ID)."
     )
 
 
