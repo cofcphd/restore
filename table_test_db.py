@@ -3,6 +3,7 @@
 import os
 import platform
 import json
+import base64
 import re
 import uuid
 from contextlib import contextmanager
@@ -67,6 +68,60 @@ def _normalize_access_token(raw_token: str | None) -> tuple[str | None, bool]:
     if token.lower().startswith(bearer_prefix):
         return token[len(bearer_prefix) :].strip(), True
     return token, False
+
+
+def _decode_jwt_payload_without_verification(token: str) -> dict | None:
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    payload_segment = parts[1]
+    padding = "=" * (-len(payload_segment) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode((payload_segment + padding).encode("utf-8"))
+        payload = json.loads(decoded.decode("utf-8"))
+    except Exception:  # noqa: BLE001 - debug helper should never crash
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _token_scope_debug(token: str) -> dict:
+    payload = _decode_jwt_payload_without_verification(token)
+    if payload is None:
+        return {
+            "token_is_jwt": False,
+            "token_scope_claim": None,
+            "token_scopes_contains_sql": False,
+            "token_audience": None,
+            "token_subject_preview": None,
+            "token_exp": None,
+        }
+
+    scope_claim = payload.get("scope", payload.get("scp"))
+    if isinstance(scope_claim, str):
+        scopes = scope_claim.split()
+    elif isinstance(scope_claim, list):
+        scopes = [str(item) for item in scope_claim]
+    else:
+        scopes = []
+        scope_claim = None
+
+    audience = payload.get("aud")
+    if isinstance(audience, list):
+        audience = [str(item) for item in audience[:5]]
+    elif audience is not None:
+        audience = str(audience)
+
+    subject = payload.get("sub")
+    subject_preview = _mask_value(str(subject)) if subject else None
+
+    return {
+        "token_is_jwt": True,
+        "token_scope_claim": scope_claim,
+        "token_scopes_contains_sql": any("sql" in scope.lower() for scope in scopes),
+        "token_audience": audience,
+        "token_subject_preview": subject_preview,
+        "token_exp": payload.get("exp"),
+    }
 
 
 def _warehouse_http_path() -> str:
@@ -167,6 +222,12 @@ def test_databricks_connection(headers) -> dict:
         "warehouse_id_preview": None,
         "token_present": False,
         "token_had_bearer_prefix": False,
+        "token_is_jwt": False,
+        "token_scope_claim": None,
+        "token_scopes_contains_sql": False,
+        "token_audience": None,
+        "token_subject_preview": None,
+        "token_exp": None,
         "warehouse_rest_status_code": None,
         "warehouse_rest_ok": False,
         "warehouse_rest_error_text": None,
@@ -206,6 +267,7 @@ def test_databricks_connection(headers) -> dict:
                 "Mangler x-forwarded-access-token. Tjek at User authorization er slået til, "
                 "at appen har sql scope, og at appen er åbnet via Databricks Apps UI."
             )
+        status.update(_token_scope_debug(token))
 
         current_user_url = f"https://{server_hostname}/api/2.0/preview/scim/v2/Me"
         try:
