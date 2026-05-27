@@ -334,3 +334,68 @@ def test_databricks_connection(headers) -> dict:
             status["error_dict"] = None
 
     return status
+
+
+def _normalised_hosts() -> tuple[str, str]:
+    raw_host = (os.getenv("DATABRICKS_HOST") or "").strip()
+    if not raw_host:
+        raise ValueError("Mangler DATABRICKS_HOST")
+
+    if raw_host.startswith(("http://", "https://")):
+        sdk_host = raw_host
+    else:
+        sdk_host = f"https://{raw_host}"
+
+    server_hostname = raw_host.replace("https://", "").replace("http://", "")
+    return sdk_host, server_hostname
+
+
+def test_databricks_connection_app_auth() -> dict:
+    sdk_host, server_hostname = _normalised_hosts()
+    warehouse_id = (os.getenv("DATABRICKS_WAREHOUSE_ID") or "").strip()
+    if not warehouse_id:
+        raise ValueError("Mangler DATABRICKS_WAREHOUSE_ID")
+
+    http_path = f"/sql/1.0/warehouses/{warehouse_id}"
+
+    cfg = Config(
+        host=sdk_host,
+        client_id=os.getenv("DATABRICKS_CLIENT_ID"),
+        client_secret=os.getenv("DATABRICKS_CLIENT_SECRET"),
+    )
+
+    result = {
+        "auth_mode": "app_service_principal",
+        "databricks_client_id_present": bool(os.getenv("DATABRICKS_CLIENT_ID")),
+        "databricks_client_secret_present": bool(os.getenv("DATABRICKS_CLIENT_SECRET")),
+        "databricks_host": server_hostname,
+        "resolved_http_path": http_path,
+        "select_1_ok": False,
+        "error_type": None,
+        "error_message": None,
+        "error_repr": None,
+        "error_args": None,
+    }
+
+    try:
+        with sql.connect(
+            server_hostname=server_hostname,
+            http_path=http_path,
+            credentials_provider=lambda: cfg.authenticate,
+        ) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                rows = cursor.fetchall()
+                result["select_1_ok"] = True
+                result["select_1_result"] = str(rows)
+    except Exception as e:
+        result["error_type"] = type(e).__name__
+        result["error_message"] = str(e)
+        result["error_repr"] = repr(e)
+        try:
+            result["error_args"] = list(getattr(e, "args", []))
+        except Exception:
+            result["error_args"] = None
+
+    # Never include secrets; only booleans above are used.
+    return result

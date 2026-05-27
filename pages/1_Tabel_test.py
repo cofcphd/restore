@@ -1,7 +1,12 @@
 import streamlit as st
 
 from auth import get_user_token
-from table_test_db import load_entries, save_entry, test_databricks_connection
+from table_test_db import (
+    load_entries,
+    save_entry,
+    test_databricks_connection,
+    test_databricks_connection_app_auth,
+)
 
 st.title("Tabel-test")
 st.caption("Simpel læs/skriv-test mod `app_test.simple_form_entries`.")
@@ -68,6 +73,17 @@ if col_test.button("Test Databricks forbindelse", use_container_width=True):
         error_type = result.get("error_type") or "UkendtFejl"
         error_message = result.get("error_message") or "Ingen fejlbesked."
         st.error(f"Forbindelsestest fejlede: {error_type}: {error_message}")
+
+if col_test.button("Test Databricks forbindelse som app", use_container_width=True):
+    result_app = test_databricks_connection_app_auth()
+    st.session_state["table_test_connection_app_result"] = result_app
+    st.json(result_app)
+    if result_app.get("select_1_ok"):
+        st.success("App-forbindelse OK: SELECT 1 lykkedes.")
+    else:
+        error_type = result_app.get("error_type") or "UkendtFejl"
+        error_message = result_app.get("error_message") or "Ingen fejlbesked."
+        st.error(f"App-forbindelsestest fejlede: {error_type}: {error_message}")
 
 st.markdown("### Gemte rækker")
 rows = st.session_state.get("table_test_rows")
