@@ -24,7 +24,7 @@ try:
     groups = group_names(me)
 
     st.subheader(display_name)
-    st.write(f"Brugernavn: `{me.user_name}`")
+    st.write(f"User name: `{me.user_name}`")
 
     st.markdown("### Grupper")
     if groups:
